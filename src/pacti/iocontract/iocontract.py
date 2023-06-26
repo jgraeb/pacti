@@ -575,6 +575,9 @@ class IoContract(Generic[TermList_t]):
         Raises:
             IncompatibleArgsError: An error occurred during composition.
         """
+        print('Composing')
+        from ipdb import set_trace as st
+        st()
         if vars_to_keep is None:
             vars_to_keep = []
         conflict_vars = list_diff(vars_to_keep, list_union(self.outputvars, other.outputvars))
