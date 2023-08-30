@@ -25,6 +25,8 @@ from typing import Any, Generic, List, Optional, TypeVar
 from pacti.utils.errors import IncompatibleArgsError
 from pacti.utils.lists import list_diff, list_intersection, list_union, lists_equal
 
+import _pickle as pickle
+
 Var_t = TypeVar("Var_t", bound="Var")
 Term_t = TypeVar("Term_t", bound="Term")
 TermList_t = TypeVar("TermList_t", bound="TermList")
@@ -242,7 +244,7 @@ class TermList(ABC):
         """
 
     @abstractmethod
-    def elim_vars_by_refining(self: TermList_t, context: TermList_t, vars_to_elim: List[Var]) -> TermList_t:
+    def elim_vars_by_refining(self: TermList_t, context: TermList_t, vars_to_elim: List[Var], diagnostics = False, to_diagnose = False) -> TermList_t:
         """
         Eliminate variables from termlist by refining it in a context.
 
@@ -264,7 +266,7 @@ class TermList(ABC):
         """
 
     @abstractmethod
-    def elim_vars_by_relaxing(self: TermList_t, context: TermList_t, vars_to_elim: List[Var]) -> TermList_t:
+    def elim_vars_by_relaxing(self: TermList_t, context: TermList_t, vars_to_elim: List[Var], diagnostics = False, to_diagnose = None) -> TermList_t:
         """
         Eliminate variables from termlist by relaxing it in a context
 
@@ -555,7 +557,8 @@ class IoContract(Generic[TermList_t]):
         guarantees_check: bool = (self.g | other.a) <= (other.g | other.a)
         return assumptions_check and guarantees_check
 
-    def compose(self: IoContract_t, other: IoContract_t, vars_to_keep: Any = None, diagnostics=False) -> IoContract_t:  # noqa: WPS231
+    def compose(self: IoContract_t, other: IoContract_t, vars_to_keep: Any = None, diagnostics=False, to_diagnose = None, look_here = None) -> IoContract_t:  # noqa: WPS231
+        # global return_dict
         """Compose IO contracts.
 
         Compute the composition of the two given contracts and abstract the
@@ -575,10 +578,12 @@ class IoContract(Generic[TermList_t]):
         Raises:
             IncompatibleArgsError: An error occurred during composition.
         """
+        from ipdb import set_trace as st
+
         if diagnostics:
-            print('Composing')
-            from ipdb import set_trace as st
-            st()
+            return_dict = dict()
+            print("Composing - Looking for term {0} here {1}".format(to_diagnose, look_here))
+        #     st()
 
         if vars_to_keep is None:
             vars_to_keep = []
@@ -640,24 +645,101 @@ class IoContract(Generic[TermList_t]):
                 )
             assumptions = new_a | other.a
         # contracts can't help each other
-        else:
-            logging.debug("****** Assumption computation: other provides context for self")
+        else: # nobody helps anyone, parallel components, merging
+            logging.debug("****** Assumption computation: other provides context for self") # wrong message
             assumptions = self.a | other.a
         logging.debug("Assumption computation: computed assumptions:\n%s", assumptions)
-        assumptions = assumptions.simplify()
+        assumptions = assumptions.simplify() # removes redundant assumptions?
+
+        if diagnostics and look_here == 'assumptions':
+            if self_helps_other and not other_helps_self:
+                st()
+                if to_diagnose in new_a.terms:
+                    st()
+                    new_a = other.a.elim_vars_by_refining(self.a | self.g, assumptions_forbidden_vars, diagnostics = True, to_diagnose = to_diagnose)
+                    print('Trace it back here - to do')
+                elif to_diagnose in self.a:
+                    print('Done - Term belongs to assumptions of self')
+                    return_dict.update({to_diagnose: 'self.assumptions'})
+                    st()
+
+            elif other_helps_self and not self_helps_other:
+                if to_diagnose in new_a.terms:
+                    st()
+                    new_a = self.a.elim_vars_by_refining(other.a | other.g, assumptions_forbidden_vars, diagnostics = True, to_diagnose = to_diagnose)
+                    print('Trace it back here - to do')
+                elif to_diagnose.terms[i] in other.a:
+                    print('Done - Term belongs to assumptions of other')
+                    return_dict.update({to_diagnose: 'other.assumptions'})
+                    st()
 
         # process guarantees
         logging.debug("****** Computing guarantees")
         g1_t = self.g.copy()
         g2_t = other.g.copy()
-        g1 = g1_t.elim_vars_by_relaxing(g2_t, intvars)
-        g2 = g2_t.elim_vars_by_relaxing(g1_t, intvars)
+
+        if diagnostics and look_here == 'g1':
+            result = g1_t.elim_vars_by_relaxing(g2_t, intvars, diagnostics = True, to_diagnose = to_diagnose) # check in polyhedra.py
+            g1 = result[0]
+            diagnosis_result = result[1]
+            print("Traced it back to self.g or other.g!")
+            if diagnosis_result['term']:
+                term = diagnosis_result['term']
+                return_dict.update({term: 'self.g'})
+            if diagnosis_result['helpers']:
+                for helper in diagnosis_result['helpers']:
+                    return_dict.update({helper: 'other.g'})
+        else:
+            g1 = g1_t.elim_vars_by_relaxing(g2_t, intvars)
+
+        if diagnostics and look_here == 'g2':
+            result = g2_t.elim_vars_by_relaxing(g1_t, intvars, diagnostics = True, to_diagnose = to_diagnose)
+            g2 = result[0]
+            diagnosis_result = result[1]
+            print("Traced it back to self.g or other.g!")
+            if diagnosis_result['term']:
+                term = diagnosis_result['term']
+                return_dict.update({term: 'other.g'})
+            if diagnosis_result['helpers']:
+                for helper in diagnosis_result['helpers']:
+                    return_dict.update({helper: 'self.g'})
+        else:
+            g2 = g2_t.elim_vars_by_relaxing(g1_t, intvars)
+
+        if diagnostics and look_here == 'guarantees':
+            oldallguarantees = g1 | g2
+
+            newallguarantees = oldallguarantees.elim_vars_by_relaxing(assumptions, intvars)
+            if to_diagnose in newallguarantees.terms:
+                print("Find it in the last relaxation in assumptions and oldallguarantees!")
+                result = oldallguarantees.elim_vars_by_relaxing(assumptions, intvars, diagnostics = True, to_diagnose = to_diagnose) # augment here
+                diagnosis_result = result[1]
+                if diagnosis_result['term']:
+                    term = diagnosis_result['term']
+                    if term in g1.terms:
+                        print("Found the guarantee in g1!")
+                        return_dict.update({term: 'g1'})
+                    if term in g2.terms:
+                        print("Found the guarantee in g2!")
+                        return_dict.update({term: 'g2'})
+
+                if diagnosis_result['helpers']:
+                    for helper in diagnosis_result['helpers']:
+                        return_dict.update({helper : 'assumptions'})
+
+
         allguarantees = g1 | g2
-        allguarantees = allguarantees.elim_vars_by_relaxing(assumptions, intvars)
+        allguarantees = allguarantees.elim_vars_by_relaxing(assumptions, intvars) # start here and trace back g1,g2 etc.
 
         # eliminate terms with forbidden vars
         terms_to_elim = allguarantees.get_terms_with_vars(intvars)
         allguarantees -= terms_to_elim
+
+        # save the diagnostics result to pickle file
+        if diagnostics:
+            filename = 'diagnose.pkl'
+            with open(filename, 'wb') as pckl_file:
+                pickle.dump(return_dict, pckl_file)
 
         return type(self)(assumptions, allguarantees, inputvars, outputvars)
 
