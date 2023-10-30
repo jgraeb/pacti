@@ -1,10 +1,9 @@
 import unittest
-import pyparsing as pp
 from typing import List
+
 from pacti.iocontract import Var
+from pacti.terms.polyhedra import PolyhedralTerm, serializer
 from pacti.utils.errors import PolyhedralSyntaxConvexException, PolyhedralSyntaxException
-from pacti.terms.polyhedra.syntax.data import *
-from pacti.terms.polyhedra import serializer, PolyhedralTerm
 
 
 class TestFromString(unittest.TestCase):
@@ -35,8 +34,9 @@ class TestFromString(unittest.TestCase):
         self.assertTrue(pt.get_coefficient(Var("y")), 1)
 
     def test_exception1a(self) -> None:
-        with self.assertRaises(PolyhedralSyntaxException):
+        with self.assertRaises(PolyhedralSyntaxException) as e:
             serializer.polyhedral_termlist_from_string("|x| = 0")
+        assert "|x| = 0" in str(e.exception)
 
     def test_exception1b(self) -> None:
         with self.assertRaises(PolyhedralSyntaxException):
@@ -147,8 +147,9 @@ class TestFromString(unittest.TestCase):
         self.assertTrue(len(pts) == 2, f"{len(pts)}")
 
     def test_convex1b(self) -> None:
-        with self.assertRaises(PolyhedralSyntaxConvexException):
+        with self.assertRaises(PolyhedralSyntaxConvexException) as e:
             serializer.polyhedral_termlist_from_string("-|x1| <= 0")
+        assert "-|x1| <= 0" in str(e.exception)
 
     def test_convex2a(self) -> None:
         pts: List[PolyhedralTerm] = serializer.polyhedral_termlist_from_string("|x1| + |x2| <= 10")
@@ -189,6 +190,7 @@ class TestFromString(unittest.TestCase):
     def test_convex3f(self) -> None:
         pts: List[PolyhedralTerm] = serializer.polyhedral_termlist_from_string("|x1| + 2|x3| <= 10 - (|x2| - |x3|)")
         self.assertTrue(len(pts) == 8, f"{len(pts)}")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@ $x_i$ are variables and the $a_i$ and $c$ are constants.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -15,10 +16,12 @@ import sympy
 from scipy.optimize import linprog
 
 import pacti.terms.polyhedra.serializer as serializer  # noqa: I250, WPS301
-from pacti.iocontract import Term, TermList, Var
+from pacti.iocontract import TacticStatistics, Term, TermList, Var
 from pacti.utils.lists import list_diff, list_intersection, list_union
 
 numeric = Union[int, float]
+
+TACTICS_ORDER = [1, 2, 3, 4, 5]  # noqa: WPS407
 
 
 class PolyhedralTerm(Term):
@@ -68,8 +71,8 @@ class PolyhedralTerm(Term):
         match = self.variables.keys() == other.variables.keys()
         if match:
             for k, v in self.variables.items():
-                match = match and (v == other.variables[k])
-        return match and self.constant == other.constant
+                match = match and np.equal(v, other.variables[k])
+        return match and np.equal(self.constant, other.constant)
 
     def __str__(self) -> str:
         varlist = list(self.variables.items())
@@ -146,7 +149,7 @@ class PolyhedralTerm(Term):
 
         Returns:
             `True` if the syntax of the term refers to the given variable;
-            `False` otherwise.
+                `False` otherwise.
         """
         return var_to_seek in self.vars
 
@@ -179,8 +182,8 @@ class PolyhedralTerm(Term):
 
         Returns:
             `True` if the variable's polarity matches `polarity` and
-            `False` otherwise. If the variable's coefficient in the term
-            is zero, return `True`.
+                `False` otherwise. If the variable's coefficient in the term
+                is zero, return `True`.
         """
         if polarity:
             return self.variables[var] >= 0
@@ -232,8 +235,8 @@ class PolyhedralTerm(Term):
 
         Returns:
             If all variables in the term match the polarities specified in the
-            argument, the routine returns the matching variables.  Otherwise,
-            it returns an empty list.
+                argument, the routine returns the matching variables.  Otherwise,
+                it returns an empty list.
         """
         variable_list = []
         for var in variable_polarity.keys():  # noqa: VNE002
@@ -294,7 +297,7 @@ class PolyhedralTerm(Term):
 
         Returns:
             A new term in which the variable is substituted with the given term
-            understood as an equality.
+                understood as an equality.
         """
         if self.contains_var(var):
             term = subst_with_term.multiply(self.get_coefficient(var))
@@ -318,7 +321,7 @@ class PolyhedralTerm(Term):
 
         Returns:
             A new term which corresponds to the isolation of the indicated
-            variable.
+                variable.
 
         Raises:
             ValueError: the indicated variable is not contained in the term.
@@ -346,7 +349,7 @@ class PolyhedralTerm(Term):
                 PolyhedralTerm.to_symbolic(term)
             ```
 
-            yields the expression $-2x + 3y$.
+            yields the expression $-2x + 3y - 4$.
 
         Args:
             term:
@@ -408,7 +411,7 @@ class PolyhedralTerm(Term):
 
         Returns:
             A tuple consisting of (i) the ordered list of coefficients and (ii)
-            the term's constant.
+                the term's constant.
         """
         coeffs = []
         for var in variable_list:  # noqa: VNE002
@@ -451,7 +454,7 @@ class PolyhedralTerm(Term):
 
         Returns:
             A dictionary mapping variables to their solutions. The solutions are
-            expressed as PolyhedralTerm instances.
+                expressed as PolyhedralTerm instances.
         """
         logging.debug("GetVals: %s Vars: %s", context, vars_to_elim)
         vars_to_solve = list_intersection(context.vars, vars_to_elim)
@@ -532,7 +535,7 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
 
         Returns:
             A new PolyhedralTermList in which the variables have been
-            substituted with the values provided.
+                substituted with the values provided.
 
         Raises:
             ValueError: constraints are unsatisfiable under these valuation of variables.
@@ -577,7 +580,13 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
             retval = False
         return retval
 
-    def elim_vars_by_refining(self, context: PolyhedralTermList, vars_to_elim: list) -> PolyhedralTermList:
+    def elim_vars_by_refining(
+        self,
+        context: PolyhedralTermList,
+        vars_to_elim: list,
+        simplify: bool = True,
+        tactics_order: Optional[List[int]] = None,
+    ) -> Tuple[PolyhedralTermList, TacticStatistics]:
         """
         Eliminate variables from PolyhedralTermList by refining it in context.
 
@@ -593,11 +602,17 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
                 The TermList providing the context for the refinement.
             vars_to_elim:
                 Variables that should not appear in the resulting term.
+            simplify:
+                Whether to perform simplifications.
+            tactics_order:
+                Optionally, the order of tactics to invoke during transformation.
 
         Returns:
-            A list of terms not containing any variables in `vars_to_elim`
-            and which, in the context provided, imply the terms contained in the
-            calling termlist.
+            A tuple of:
+            - A list of terms not containing any variables in `vars_to_elim`
+                and which, in the context provided, imply the terms contained in the
+                calling termlist;
+            - The list of tuples, for each processed term, of the tactic used, time spend, and tactic invocation count.
 
         Raises:
             ValueError: Self has empty intersection with its context.
@@ -605,14 +620,21 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         logging.debug("Refining from terms: %s", self)
         logging.debug("Context: %s", context)
         logging.debug("Vars to elim: %s", vars_to_elim)
+        if tactics_order is None:
+            tactics_order = TACTICS_ORDER
+        if simplify:
+            try:
+                termlist = self.simplify(context)
+            except ValueError as e:
+                raise ValueError(
+                    "Provided constraints \n{}\n".format(self) + "are unsatisfiable in context \n{}".format(context)
+                ) from e
+        else:
+            termlist = self
         try:
-            termlist = self.simplify(context)
-        except ValueError as e:
-            raise ValueError(
-                "Provided constraints \n{}\n".format(self) + "are unsatisfiable in context \n{}".format(context)
-            ) from e
-        try:
-            return termlist._transform(context=context, vars_to_elim=vars_to_elim, refine=True)
+            return termlist._transform(
+                context=context, vars_to_elim=vars_to_elim, refine=True, simplify=simplify, tactics_order=tactics_order
+            )
         except ValueError as e:
             raise ValueError(
                 "The elimination of variables \n{}\n".format([str(x) for x in vars_to_elim])
@@ -630,7 +652,13 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         """
         return len(self.terms) == 0
 
-    def elim_vars_by_relaxing(self, context: PolyhedralTermList, vars_to_elim: list) -> PolyhedralTermList:
+    def elim_vars_by_relaxing(
+        self,
+        context: PolyhedralTermList,
+        vars_to_elim: list,
+        simplify: bool = True,
+        tactics_order: Optional[List[int]] = None,
+    ) -> Tuple[PolyhedralTermList, TacticStatistics]:
         """
         Eliminate variables from PolyhedralTermList by abstracting it in context.
 
@@ -646,11 +674,17 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
                 The TermList providing the context for the transformation.
             vars_to_elim:
                 Variables that should not appear in the relaxed terms.
+            simplify:
+                Whether to perform simplifications.
+            tactics_order:
+                Optionally, the order of tactics to invoke during transformation.
 
         Returns:
-            A list of terms not containing any variables in `vars_to_elim`
-            and which, in the context provided, are implied by the terms
-            contained in the calling termlist.
+            A tuple of:
+            - A list of terms not containing any variables in `vars_to_elim`
+                and which, in the context provided, are implied by the terms
+                contained in the calling termlist;
+            - The list of tuples, for each processed term, of the tactic used, time spend, and tactic invocation count.
 
         Raises:
             ValueError: Constraints have empty intersection with context.
@@ -659,14 +693,22 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         logging.debug("Relaxing from terms %s", self)
         logging.debug("Context: %s", context)
         logging.debug("Vars to elim: %s", vars_to_elim)
+
+        if tactics_order is None:
+            tactics_order = TACTICS_ORDER
+        if simplify:
+            try:
+                termlist = self.simplify(context)
+            except ValueError as e:
+                raise ValueError(
+                    "Provided constraints \n{}\n".format(self) + "are unsatisfiable in context \n{}".format(context)
+                ) from e
+        else:
+            termlist = self.copy()
         try:
-            termlist = self.simplify(context)
-        except ValueError as e:
-            raise ValueError(
-                "Provided constraints \n{}\n".format(self) + "are unsatisfiable in context \n{}".format(context)
-            ) from e
-        try:
-            termlist = termlist._transform(context=context, vars_to_elim=vars_to_elim, refine=False)
+            (termlist, tactics_data) = termlist._transform(
+                context=context, vars_to_elim=vars_to_elim, refine=False, simplify=simplify, tactics_order=tactics_order
+            )
         except ValueError as e:
             raise ValueError(
                 "The elimination of variables \n{}\n".format([str(x) for x in vars_to_elim])
@@ -677,7 +719,7 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         # eliminate terms containing the variables to be eliminated
         terms_to_elim = termlist.get_terms_with_vars(vars_to_elim)
         termlist.terms = list_diff(termlist.terms, terms_to_elim.terms)
-        return termlist
+        return termlist, tactics_data
 
     def simplify(self, context: Optional[PolyhedralTermList] = None) -> PolyhedralTermList:
         """
@@ -761,28 +803,56 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         logging.debug("Polytope is \n%s", self_mat)
         return PolyhedralTermList.is_polytope_empty(self_mat, self_cons)
 
-    def _transform(self, context: PolyhedralTermList, vars_to_elim: list, refine: bool) -> PolyhedralTermList:
+    # Returns:
+    # - transformed term list
+    # - a list of tuples of the tactic used, time spent, and invocation count
+    def _transform(
+        self,
+        context: PolyhedralTermList,
+        vars_to_elim: list,
+        refine: bool,
+        simplify: bool,
+        tactics_order: Optional[List[int]] = None,
+    ) -> Tuple[PolyhedralTermList, TacticStatistics]:
         logging.debug("Transforming: %s", self)
         logging.debug("Context terms: %s", context)
         logging.debug("Variables to eliminate: %s", vars_to_elim)
+        if tactics_order is None:
+            tactics_order = TACTICS_ORDER
         term_list = list(self.terms)
         new_terms = self.copy()
+
+        # List to store the tuples of the tactic used, time spent, and invocation count
+        tactics_used: TacticStatistics = []
+
         for i, term in enumerate(term_list):
-            copy_new_terms = new_terms.copy()
-            copy_new_terms.terms.remove(term)
-            helpers = context | copy_new_terms
-            try:
-                new_term = PolyhedralTermList._transform_term(term, helpers, vars_to_elim, refine)
-            except ValueError:
+            if list_intersection(term.vars, vars_to_elim):
+                copy_new_terms = new_terms.copy()
+                copy_new_terms.terms.remove(term)
+                helpers = context | copy_new_terms
+                try:
+                    (new_term, tactic_num, tactic_time, tactic_count) = PolyhedralTermList._transform_term(
+                        term, helpers, vars_to_elim, refine, tactics_order
+                    )
+                except ValueError:
+                    new_term = term.copy()
+                    tactic_num = 0
+                    tactic_time = 0
+                    tactic_count = 0
+                tactics_used.append((tactic_num, tactic_time, tactic_count))
+
+            else:
                 new_term = term.copy()
 
-            new_terms.terms[i] = new_term.copy()
+            new_terms.terms[i] = new_term
 
         that = PolyhedralTermList(new_terms.terms)
 
         # the last step needs to be a simplification
         logging.debug("Ending transformation with simplification")
-        return that.simplify(context)
+        if simplify:
+            return that.simplify(context), tactics_used
+        return that, tactics_used
 
     def optimize(self, objective: Dict[Var, numeric], maximize: bool = True) -> Optional[numeric]:
         """
@@ -847,7 +917,7 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
 
         Returns:
             A tuple `variables, A, b, a_h, b_h` consisting of the variable
-            order and the matrix-vector pairs for the terms and the context.
+                order and the matrix-vector pairs for the terms and the context.
         """
         variables = list(list_union(terms.vars, context.vars))
         a = []
@@ -1170,17 +1240,24 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         return matrix_row_terms, forbidden_vars
 
     @staticmethod
-    def _tactic_1(
-        term: PolyhedralTerm, context: PolyhedralTermList, vars_to_elim: list, refine: bool
+    def _context_reduction(
+        term: PolyhedralTerm, context: PolyhedralTermList, vars_to_elim: list, refine: bool, strategy: int
     ) -> PolyhedralTerm:
-        logging.debug("********** Tactic 1")
+        logging.debug("********** Context reduction")
         logging.debug("Vars_to_elim %s \nTerm %s \nContext %s " % (vars_to_elim, term, context))
         try:
-            matrix_row_terms, forbidden_vars = PolyhedralTermList._get_kaykobad_context(
-                term, context, vars_to_elim, refine
-            )
+            if strategy == 1:
+                matrix_row_terms, forbidden_vars = PolyhedralTermList._get_kaykobad_context(
+                    term, context, vars_to_elim, refine
+                )
+            elif strategy == 5:
+                matrix_row_terms, forbidden_vars = PolyhedralTermList._get_tlp_context(
+                    term, context, vars_to_elim, refine
+                )
+            else:
+                raise ValueError("Unknown strategy")
         except ValueError:
-            logging.debug("Could not transform %s using Tactic 1", term)
+            logging.debug("Could not transform %s using Context reduction", term)
             raise ValueError("Could not transform term {}".format(term))
         matrix_row_terms_tl = PolyhedralTermList(list(matrix_row_terms))
         sols = PolyhedralTerm.solve_for_variables(matrix_row_terms_tl, list(forbidden_vars))
@@ -1195,9 +1272,16 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         return result
 
     @staticmethod
+    def _tactic_1(
+        term: PolyhedralTerm, context: PolyhedralTermList, vars_to_elim: list, refine: bool
+    ) -> Tuple[Optional[PolyhedralTerm], int]:
+        logging.debug("********** Tactic 1")
+        return PolyhedralTermList._context_reduction(term, context, vars_to_elim, refine, 1), 1
+
+    @staticmethod
     def _tactic_2(  # noqa: WPS231
         term: PolyhedralTerm, context: PolyhedralTermList, vars_to_elim: list, refine: bool
-    ) -> PolyhedralTerm:
+    ) -> Tuple[Optional[PolyhedralTerm], int]:
         logging.debug("************ Tactic 2")
         logging.debug("Vars_to_elim %s \nTerm %s \nContext %s " % (vars_to_elim, term, context))
         conflict_vars = list_intersection(vars_to_elim, term.vars)
@@ -1227,7 +1311,7 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         logging.debug(new_context_cons)
         logging.debug(objective)
         res = linprog(c=objective, A_ub=new_context_mat, b_ub=new_context_cons, bounds=(None, None))
-        if res["status"] == 3:
+        if res["status"] in {2, 3}:
             # unbounded
             # return term.copy()
             raise ValueError("Tactic 2 did not succeed")
@@ -1239,13 +1323,13 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         result.constant -= replacement
         # check vacuity
         if not result.vars:
-            return term.copy()
-        return result
+            return term.copy(), 1
+        return result, 1
 
     @staticmethod
     def _tactic_3(
         term: PolyhedralTerm, context: PolyhedralTermList, vars_to_elim: list, refine: bool
-    ) -> PolyhedralTerm:
+    ) -> Tuple[Optional[PolyhedralTerm], int]:
         logging.debug("************ Tactic 3")
         logging.debug("Vars_to_elim %s \nTerm %s \nContext %s " % (vars_to_elim, term, context))
         conflict_vars = list_intersection(vars_to_elim, term.vars)
@@ -1266,30 +1350,34 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         # now we use tactic 1
         new_elims = list_diff(list_union(vars_to_elim, [Var("_")]), [conflict_vars[0]])
         try:
-            result = PolyhedralTermList._tactic_1(new_term, new_context, new_elims, refine)
+            result, count = PolyhedralTermList._tactic_1(new_term, new_context, new_elims, refine)
         except ValueError as e:  # noqa: WPS329 Found useless `except` case
             raise e
         logging.debug("************ Leaving Tactic 3")
         logging.debug("Vars_to_elim %s \nTerm %s \nContext %s " % (vars_to_elim, term, context))
-        return result
+        return result, count
 
     @staticmethod
     def _tactic_4(  # noqa: WPS231
         term: PolyhedralTerm, context: PolyhedralTermList, vars_to_elim: list, refine: bool, no_vars: List[Var]
-    ) -> PolyhedralTerm:
+    ) -> Tuple[Optional[PolyhedralTerm], int]:
         logging.debug("************ Tactic 4")
         logging.debug("Vars_to_elim %s \nTerm %s \nContext %s " % (vars_to_elim, term, context))
         if not refine:
             raise ValueError("Only refinement is supported")
+
         conflict_vars = list_intersection(vars_to_elim, term.vars)
         if len(conflict_vars) > 1:
             raise ValueError("Tactic 4 unsuccessful")
+
         var_to_elim = conflict_vars[0]
         goal_context: List[PolyhedralTerm] = []
         useful_context: List[PolyhedralTerm] = []
         polarity = -1
+
         if refine:
             polarity = 1
+
         for context_term in context.terms:
             if list_intersection(context_term.vars, no_vars):
                 continue
@@ -1300,10 +1388,15 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
                     goal_context.append(context_term.copy())
                 if len(temp_conflict_vars) == 2:
                     useful_context.append(context_term.copy())
+
         if not useful_context and not goal_context:
             raise ValueError("Tactic 4 unsuccessful")
+
+        total_calls = 1
+
         if goal_context:
-            return term.substitute_variable(var_to_elim, goal_context[0].isolate_variable(var_to_elim))
+            return term.substitute_variable(var_to_elim, goal_context[0].isolate_variable(var_to_elim)), total_calls
+
         ############
         for useful_term in useful_context:
             new_context = context.copy()
@@ -1311,34 +1404,117 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
             new_term = useful_term.isolate_variable(var_to_elim)
             new_no_vars = no_vars.copy()
             new_no_vars.append(var_to_elim)
-            try:
-                return_term = PolyhedralTermList._tactic_4(new_term, new_context, vars_to_elim, refine, new_no_vars)
+            try:  # noqa: WPS229
+                return_term, recursive_count = PolyhedralTermList._tactic_4(
+                    new_term, new_context, vars_to_elim, refine, new_no_vars
+                )
+                total_calls += recursive_count
+                if return_term is None:
+                    continue
+                return term.substitute_variable(var_to_elim, return_term), total_calls
             except ValueError:
-                continue
-            return term.substitute_variable(var_to_elim, return_term)
-        raise ValueError("Tactic 4 unsuccessful")
+                total_calls += 1
+
+        return None, total_calls
 
     @staticmethod
-    def _transform_term(
+    def _get_tlp_context(  # noqa: WPS231
         term: PolyhedralTerm, context: PolyhedralTermList, vars_to_elim: list, refine: bool
-    ) -> PolyhedralTerm:
+    ) -> Tuple[List[PolyhedralTerm], List[Var]]:
+        forbidden_vars = list_intersection(vars_to_elim, term.vars)
+        matrix_row_terms = []
+
+        var_list, B, b, _, _ = PolyhedralTermList.termlist_to_polytope(  # noqa: WPS236, N806
+            terms=context, context=PolyhedralTermList([])
+        )
+        objective = np.array([term.get_coefficient(var) if var in forbidden_vars else 0 for var in var_list])
+        if refine:
+            objective *= -1
+
+        res = linprog(c=objective, A_ub=B, b_ub=b, bounds=(None, None))
+        # Linprog's status values
+        # 0 : Optimization proceeding nominally.
+        # 1 : Iteration limit reached.
+        # 2 : Problem appears to be infeasible.
+        # 3 : Problem appears to be unbounded.
+        # 4 : Numerical difficulties encountered.
+        if res["status"] == 3:
+            raise ValueError("Unbounded")
+        elif res["status"] != 0:
+            raise ValueError("Constraints are unfeasible")
+
+        num_vars_to_elim = len(forbidden_vars)
+        slack = res["slack"]
+        indices = np.where(np.isclose(slack, 0))[0]
+
+        assert len(indices) >= num_vars_to_elim
+        terms_added = 0
+        for index in indices:
+            context_term = context.terms[index]
+            if list_intersection(context_term.vars, forbidden_vars):
+                matrix_row_terms.append(context_term)
+                terms_added += 1
+                if terms_added == num_vars_to_elim:
+                    break
+
+        if terms_added < num_vars_to_elim:
+            raise ValueError("Context has insufficient information")
+
+        return matrix_row_terms, forbidden_vars
+
+    @staticmethod
+    def _tactic_5(  # noqa: WPS231
+        term: PolyhedralTerm, context: PolyhedralTermList, vars_to_elim: list, refine: bool
+    ) -> Tuple[Optional[PolyhedralTerm], int]:
+        logging.debug("************ Tactic 5")
+        return PolyhedralTermList._context_reduction(term, context, vars_to_elim, refine, 5), 1
+
+    @staticmethod
+    def _tactic_trivial(  # noqa: WPS231
+        term: PolyhedralTerm, context: PolyhedralTermList, vars_to_elim: list, refine: bool
+    ) -> Tuple[Optional[PolyhedralTerm], int]:
+        return term.copy(), 1
+
+    TACTICS = {  # noqa: WPS115
+        1: _tactic_1.__func__,  # type: ignore
+        2: _tactic_2.__func__,  # type: ignore
+        3: _tactic_3.__func__,  # type: ignore
+        4: lambda term, context, vars_to_elim, refine: PolyhedralTermList._tactic_4(
+            term, context, vars_to_elim, refine, []
+        ),
+        5: _tactic_5.__func__,  # type: ignore
+        6: _tactic_trivial.__func__,  # type: ignore
+    }
+
+    # Return:
+    # - transformed term
+    # - successful tactic number, if > 0; 0 if no applicable tactic, -1 if all tactics failed
+    # - count of tactic invocations if successful
+    @staticmethod
+    def _transform_term(  # noqa: WPS231
+        term: PolyhedralTerm,
+        context: PolyhedralTermList,
+        vars_to_elim: list,
+        refine: bool,
+        tactics_order: Optional[List[int]] = None,
+    ) -> Tuple[PolyhedralTerm, int, float, int]:
+        if tactics_order is None:
+            tactics_order = TACTICS_ORDER
+
         if not list_intersection(term.vars, vars_to_elim):
-            return term
+            raise ValueError("Irrelevant transform term call!")
 
         logging.debug("Transforming term: %s", term)
         logging.debug("Context: %s", context)
 
-        try:
-            result = PolyhedralTermList._tactic_1(term, context, vars_to_elim, refine)
-        except ValueError:
-            try:  # noqa: WPS505
-                result = PolyhedralTermList._tactic_3(term, context, vars_to_elim, refine)
+        for tactic_num in tactics_order:  # noqa WPS327
+            try:  # noqa: WPS229
+                ta = time.time()
+                result, count = PolyhedralTermList.TACTICS[tactic_num](term, context, vars_to_elim, refine)
+                tb = time.time()
+                if result is not None:
+                    return result, tactic_num, tb - ta, count
             except ValueError:
-                try:  # noqa: WPS505 Found nested `try` block
-                    result = PolyhedralTermList._tactic_2(term, context, vars_to_elim, refine)
-                except ValueError:
-                    try:  # noqa: WPS505 Found nested `try` block
-                        result = PolyhedralTermList._tactic_4(term, context, vars_to_elim, refine, [])
-                    except ValueError:
-                        result = term.copy()
-        return result
+                continue
+
+        return term.copy(), -1, 0, 0

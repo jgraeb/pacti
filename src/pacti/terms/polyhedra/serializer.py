@@ -1,27 +1,22 @@
 """Transformations between polyhedral structures and strings."""
 from typing import Dict, List, Tuple, Union
+
+import numpy as np
+import pyparsing as pp
+import sympy
+
+from pacti.terms.polyhedra.polyhedra import PolyhedralTerm
 from pacti.terms.polyhedra.syntax.data import (
-    PolyhedralSyntaxTermList,
     PolyhedralSyntaxAbsoluteTerm,
     PolyhedralSyntaxAbsoluteTermList,
     PolyhedralSyntaxEqlExpression,
     PolyhedralSyntaxExpression,
     PolyhedralSyntaxIneqExpression,
     PolyhedralSyntaxOperator,
+    PolyhedralSyntaxTermList,
 )
-
-from pacti.utils.errors import PolyhedralSyntaxException, PolyhedralSyntaxConvexException
-
-import numpy as np
-import sympy
-
-import pyparsing as pp
-
-from pacti.terms.polyhedra.polyhedra import PolyhedralTerm
-from pacti.utils.errors import ContractFormatError
-from pacti.terms.polyhedra.syntax.grammar import (
-    expression,
-)
+from pacti.terms.polyhedra.syntax.grammar import expression
+from pacti.utils.errors import ContractFormatError, PolyhedralSyntaxConvexException, PolyhedralSyntaxException
 
 numeric = Union[int, float]
 
@@ -206,7 +201,7 @@ def polyhedral_term_list_to_strings(  # noqa: WPS231 too much cognitive complexi
 
 def _eql_expression_to_polyhedral_terms(e: PolyhedralSyntaxEqlExpression) -> List[PolyhedralTerm]:
     """
-    Convert equality expression
+    Convert equality expression.
 
     Args:
         e: Expression
@@ -218,7 +213,6 @@ def _eql_expression_to_polyhedral_terms(e: PolyhedralSyntaxEqlExpression) -> Lis
             lhs - rhs <= 0
             -(lhs - rhs) <= 0
     """
-
     pts: List[PolyhedralTerm] = []
 
     lhs_minus_rhs: PolyhedralSyntaxTermList = e.lhs.add(e.rhs.negate())
@@ -240,11 +234,13 @@ def _check_absolute_terms(str_rep: str, absolute_term_list: List[PolyhedralSynta
 
 
 def _leq_expression_to_polyhedral_terms(str_rep: str, e: PolyhedralSyntaxIneqExpression) -> List[PolyhedralTerm]:
-    """
-    Convert less-than-or-equal expression
+    """Convert less-than-or-equal expression
 
     Args:
-        e: Expression
+        str_rep:
+            string representation of the expression
+        e:
+            Expression
 
     Returns:
         The list of PolyhedralTerms resulting from expanding the following conversion from:
@@ -272,11 +268,13 @@ def _leq_expression_to_polyhedral_terms(str_rep: str, e: PolyhedralSyntaxIneqExp
 
 
 def _geq_expression_to_polyhedral_terms(str_rep: str, e: PolyhedralSyntaxIneqExpression) -> List[PolyhedralTerm]:
-    """
-    Convert greater-than-or-equal expression
+    """Convert greater-than-or-equal expression
 
     Args:
-        e: Expression
+        str_rep:
+            string representation of the expression
+        e:
+            Expression
 
     Returns:
         The list of PolyhedralTerms resulting from expanding the following conversion from:
@@ -306,7 +304,7 @@ def _expression_to_polyhedral_terms(str_rep: str, e: PolyhedralSyntaxExpression)
             return _leq_expression_to_polyhedral_terms(str_rep, e)
         return _geq_expression_to_polyhedral_terms(str_rep, e)
 
-    assert False, f"Unexpected syntax type for the parsing of '{str_rep}': {type(e)}"
+    raise AssertionError(f"Unexpected syntax type for the parsing of '{str_rep}': {type(e)}")
 
 
 def polyhedral_termlist_from_string(str_rep: str) -> List[PolyhedralTerm]:
@@ -320,9 +318,8 @@ def polyhedral_termlist_from_string(str_rep: str) -> List[PolyhedralTerm]:
         A PolyhedralTermList representing the input expression.
 
     Raises:
-        PolyhedralSyntaxConvexException: constraint syntax involves non-convex absolute terms.
         PolyhedralSyntaxException: constraint syntax error w.r.t the polyhedral term grammar.
-
+        ValueError: Number of tokens invalid.
     """
     try:
         tokens: pp.ParseResults = expression.parse_string(str_rep, parse_all=True)
@@ -334,4 +331,4 @@ def polyhedral_termlist_from_string(str_rep: str) -> List[PolyhedralTerm]:
         if isinstance(e, PolyhedralSyntaxExpression):
             return _expression_to_polyhedral_terms(str_rep, e)
 
-    assert False, f"Polyhedral term syntax unrecognized in: {str_rep}"
+    raise ValueError(f"Polyhedral term syntax unrecognized in: {str_rep}")

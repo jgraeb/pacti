@@ -1,11 +1,11 @@
 """Grammar for polyhedral terms."""
 
-import pyparsing as pp
-from typing import List
 from functools import reduce
-from typing import cast
+from typing import List, cast
 
-from pacti.terms.polyhedra.syntax.data import (
+import pyparsing as pp
+
+from pacti.terms.polyhedra.syntax.data import (  # noqa: WPS235, WPS450 too many imported names, _combine_or_append is protected
     PolyhedralSyntaxAbsoluteTerm,
     PolyhedralSyntaxAbsoluteTermList,
     PolyhedralSyntaxAbsoluteTermOrTerm,
@@ -28,7 +28,7 @@ def _parse_only_variable(tokens: pp.ParseResults) -> PolyhedralSyntaxTermList:
 def _parse_number_and_variable(tokens: pp.ParseResults) -> PolyhedralSyntaxTermList:
     number = tokens[0]
     assert isinstance(number, float)
-    variable_term = tokens[len(tokens) - 1]
+    variable_term = tokens[len(tokens) - 1]  # noqa: WPS530 Found implicit negative index
     assert isinstance(variable_term, PolyhedralSyntaxTermList)
     assert variable_term.constant == 0
     for k in variable_term.factors:
@@ -95,7 +95,7 @@ def _parse_factor_paren_terms(tokens: pp.ParseResults) -> PolyhedralSyntaxTermLi
     group = tokens[0]
     f = group[0]
     assert isinstance(f, float)
-    pt = group[len(group) - 1]
+    pt = group[len(group) - 1]  # noqa: WPS530 Found implicit negative index
     assert isinstance(pt, PolyhedralSyntaxTermList)
     pt.constant *= f
     for k in pt.factors:
@@ -115,7 +115,7 @@ def _parse_absolute_term(tokens: pp.ParseResults) -> PolyhedralSyntaxAbsoluteTer
 
     coefficient = group[0]
     assert isinstance(coefficient, float)
-    term_list = group[len(group) - 2]
+    term_list = group[len(group) - 2]  # noqa: WPS530 Found implicit negative index
     assert isinstance(term_list, PolyhedralSyntaxTermList)
     return PolyhedralSyntaxAbsoluteTerm(term_list=term_list, coefficient=coefficient)
 
@@ -188,7 +188,7 @@ def _parse_paren_abs_or_terms(tokens: pp.ParseResults) -> PolyhedralSyntaxAbsolu
         return atl
     f = group[0]
     assert isinstance(f, float)
-    atl = group[len(group) - 2]
+    atl = group[len(group) - 2]  # noqa: WPS530 Found implicit negative index
     assert isinstance(atl, PolyhedralSyntaxAbsoluteTermList)
     atl.term_list.constant *= f
     for k in atl.term_list.factors:
@@ -201,7 +201,9 @@ def _parse_paren_abs_or_terms(tokens: pp.ParseResults) -> PolyhedralSyntaxAbsolu
     return atl
 
 
-def _parse_first_or_addl_paren_abs_or_terms(tokens: pp.ParseResults) -> PolyhedralSyntaxAbsoluteTermList:
+def _parse_first_or_addl_paren_abs_or_terms(  # noqa: WPS231
+    tokens: pp.ParseResults,
+) -> PolyhedralSyntaxAbsoluteTermList:
     assert len(tokens) == 1
     group = tokens[0]
 
@@ -259,7 +261,7 @@ def _parse_equality_expression(tokens: pp.ParseResults) -> PolyhedralSyntaxExpre
     assert len(tokens) == 1
     group = tokens[0]
     lhs = group[0]
-    assert group[1] == "==" or group[1] == "="
+    assert group[1] in {"==", "="}
     rhs = group[2]
     if isinstance(lhs, PolyhedralSyntaxTermList) & isinstance(rhs, PolyhedralSyntaxTermList):
         return PolyhedralSyntaxEqlExpression(lhs=lhs, rhs=rhs)  # (VS-Code) # type: ignore
@@ -302,13 +304,26 @@ def _parse_expression(tokens: pp.ParseResults) -> PolyhedralSyntaxExpression:
 # Produces a float
 floating_point_number = (
     pp.Combine(
-        pp.Word(pp.nums)
-        + pp.Optional("." + pp.Optional(pp.Word(pp.nums)))
+        pp.Or([pp.Word(pp.nums) + pp.Optional("." + pp.Optional(pp.Word(pp.nums))), "." + pp.Word(pp.nums)])
         + pp.Optional(pp.CaselessLiteral("E") + pp.Optional(pp.oneOf("+ -")) + pp.Word(pp.nums))
     )
     .set_parse_action(lambda t: float(t[0]))  # noqa: WPS348
     .set_name("floating_point_number")  # noqa: WPS348
 )
+
+# Basic arithmetic operations
+plus, minus, mult, div = map(pp.Literal, "+-*/")
+
+# Using infixNotation to manage precedence of operations
+arithmetic_expr = pp.infixNotation(
+    floating_point_number,
+    [
+        (mult | div, 2, pp.opAssoc.LEFT, lambda s, l, t: t[0][0] * t[0][2] if t[0][1] == "*" else t[0][0] / t[0][2]),
+        (plus | minus, 2, pp.opAssoc.LEFT, lambda s, l, t: t[0][0] + t[0][2] if t[0][1] == "+" else t[0][0] - t[0][2]),
+    ],
+)
+
+paren_arith_expr = pp.Group(pp.Suppress("(") + arithmetic_expr + pp.Suppress(")")).setParseAction(lambda t: t[0][0])
 
 variable = pp.Word(pp.alphas, pp.alphanums + "_").set_name("variable")
 symbol = pp.oneOf("+ -").set_name("symbol")
@@ -322,19 +337,21 @@ paren_terms = cast(pp.Forward, pp.Forward().set_name("paren_terms"))
 only_variable = variable.set_parse_action(_parse_only_variable)
 
 # Produces a PolyhedralSyntaxTermList
-number_and_variable = (floating_point_number + pp.Optional("*") + variable).set_parse_action(_parse_number_and_variable)
+number_and_variable = ((floating_point_number ^ paren_arith_expr) + pp.Optional("*") + variable).set_parse_action(
+    _parse_number_and_variable
+)
 
 # Produces a float
-only_number = floating_point_number
+only_number = floating_point_number ^ paren_arith_expr
 
 # Add support for parenthesized terms
 # Produces a PolyhedralSyntaxTermList
 only_variable |= paren_terms
 
 # Produces a PolyhedralSyntaxTermList
-number_and_variable |= pp.Group(floating_point_number + pp.Optional("*") + paren_terms).set_parse_action(
-    _parse_factor_paren_terms
-)
+number_and_variable |= pp.Group(
+    (floating_point_number ^ paren_arith_expr) + pp.Optional("*") + paren_terms
+).set_parse_action(_parse_factor_paren_terms)
 
 # Produces a PolyhedralSyntaxTermList
 only_number |= paren_terms
@@ -359,7 +376,7 @@ paren_terms <<= pp.Group("(" + terms + ")").set_parse_action(_parse_paren_terms)
 
 # Produces an PolyhedralSyntaxAbsoluteTerm
 abs_term = (
-    pp.Group(pp.Optional(floating_point_number + pp.Optional("*")) + "|" + terms + "|")
+    pp.Group(pp.Optional((floating_point_number ^ paren_arith_expr) + pp.Optional("*")) + "|" + terms + "|")
     .set_parse_action(_parse_absolute_term)  # noqa: WPS348
     .set_name("abs_term")  # noqa: WPS348
 )
@@ -395,36 +412,36 @@ addl_abs_or_term = (
 # Produces an PolyhedralSyntaxAbsoluteTermList
 abs_or_terms = (
     pp.Group(first_abs_or_term + pp.ZeroOrMore(addl_abs_or_term))
-    .set_parse_action(_parse_abs_or_terms)
-    .set_name("abs_or_terms")
+    .set_parse_action(_parse_abs_or_terms)  # noqa: WPS348
+    .set_name("abs_or_terms")  # noqa: WPS348
 )
 
 # Produces an PolyhedralSyntaxAbsoluteTermList
 paren_abs_or_terms = (
-    pp.Group(pp.Optional(floating_point_number + pp.Optional("*")) + "(" + abs_or_terms + ")")
-    .set_parse_action(_parse_paren_abs_or_terms)
-    .set_name("paren_abs_or_terms")
+    pp.Group(pp.Optional((floating_point_number ^ paren_arith_expr) + pp.Optional("*")) + "(" + abs_or_terms + ")")
+    .set_parse_action(_parse_paren_abs_or_terms)  # noqa: WPS348
+    .set_name("paren_abs_or_terms")  # noqa: WPS348
 )
 
 # Produces an PolyhedralSyntaxAbsoluteTermList
 first_paren_abs_or_terms = (
     pp.Group(pp.Optional(symbol, default="+") + paren_abs_or_terms | first_abs_or_term)
-    .set_parse_action(_parse_first_or_addl_paren_abs_or_terms)
-    .set_name("first_paren_abs_or_terms")
+    .set_parse_action(_parse_first_or_addl_paren_abs_or_terms)  # noqa: WPS348
+    .set_name("first_paren_abs_or_terms")  # noqa: WPS348
 )
 
 # Produces an PolyhedralSyntaxAbsoluteTermList
 addl_paren_abs_or_terms = (
     pp.Group(symbol + paren_abs_or_terms | addl_abs_or_term)
-    .set_parse_action(_parse_first_or_addl_paren_abs_or_terms)
-    .set_name("addl_paren_abs_or_terms")
+    .set_parse_action(_parse_first_or_addl_paren_abs_or_terms)  # noqa: WPS348
+    .set_name("addl_paren_abs_or_terms")  # noqa: WPS348
 )
 
 # Produces an PolyhedralSyntaxAbsoluteTermList
 multi_paren_abs_or_terms = (
     pp.Group(first_paren_abs_or_terms + pp.ZeroOrMore(addl_paren_abs_or_terms))
-    .set_parse_action(_parse_multi_paren_abs_or_terms)
-    .set_name("multi_paren_abs_or_terms")
+    .set_parse_action(_parse_multi_paren_abs_or_terms)  # noqa: WPS348
+    .set_name("multi_paren_abs_or_terms")  # noqa: WPS348
 )
 
 equality_operator = pp.Or([pp.Literal("=="), pp.Literal("=")])

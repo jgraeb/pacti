@@ -89,6 +89,7 @@ dev = [
     "certifi>=2022.9.24",
     "tox>=4.4.7",
     "editables>=0.3",
+    "ipykernel"
 ]
 
 [tool.black]
@@ -97,6 +98,7 @@ exclude = "tests/fixtures"
 
 [tool.isort]
 line_length = 120
+skip = ["__init__.py"]
 #not_skip = "__init__.py"
 multi_line_output = 3
 force_single_line = false
