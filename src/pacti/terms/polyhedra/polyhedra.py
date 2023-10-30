@@ -22,6 +22,7 @@ from pacti.utils.lists import list_diff, list_intersection, list_union
 numeric = Union[int, float]
 
 TACTICS_ORDER = [1, 2, 3, 4, 5]  # noqa: WPS407
+from ipdb import set_trace as st
 
 
 class PolyhedralTerm(Term):
@@ -586,6 +587,8 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         vars_to_elim: list,
         simplify: bool = True,
         tactics_order: Optional[List[int]] = None,
+        diagnostics = False,
+        to_diagnose = False
     ) -> Tuple[PolyhedralTermList, TacticStatistics]:
         """
         Eliminate variables from PolyhedralTermList by refining it in context.
@@ -658,6 +661,8 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         vars_to_elim: list,
         simplify: bool = True,
         tactics_order: Optional[List[int]] = None,
+        diagnostics = False,
+        to_diagnose = False
     ) -> Tuple[PolyhedralTermList, TacticStatistics]:
         """
         Eliminate variables from PolyhedralTermList by abstracting it in context.
@@ -689,6 +694,10 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         Raises:
             ValueError: Constraints have empty intersection with context.
         """
+        # if diagnostics:
+        #     from ipdb import set_trace as st
+        #     st()
+
         logging.debug("Relaxing with context")
         logging.debug("Relaxing from terms %s", self)
         logging.debug("Context: %s", context)
@@ -706,9 +715,16 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         else:
             termlist = self.copy()
         try:
-            (termlist, tactics_data) = termlist._transform(
-                context=context, vars_to_elim=vars_to_elim, refine=False, simplify=simplify, tactics_order=tactics_order
-            )
+
+        try:
+            if diagnostics:
+                (termlist, tactics_data) = termlist._transform(context=context, vars_to_elim=vars_to_elim, refine=False, simplify=simplify, tactics_order=tactics_order, diagnostics = diagnostics, to_diagnose = to_diagnose)
+                termlist = result[0]
+                diagnose = result[1]
+                # st()
+            else:
+                (termlist, tactics_data) = termlist._transform(context=context, vars_to_elim=vars_to_elim, refine=False, simplify=simplify, tactics_order=tactics_order)
+
         except ValueError as e:
             raise ValueError(
                 "The elimination of variables \n{}\n".format([str(x) for x in vars_to_elim])
@@ -813,6 +829,8 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         refine: bool,
         simplify: bool,
         tactics_order: Optional[List[int]] = None,
+        diagnostics = False,
+        to_diagnose = None
     ) -> Tuple[PolyhedralTermList, TacticStatistics]:
         logging.debug("Transforming: %s", self)
         logging.debug("Context terms: %s", context)
@@ -843,10 +861,27 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
 
             else:
                 new_term = term.copy()
+            # compare important context terms to what we have
+
+            if diagnostics:
+                from ipdb import set_trace as st
+                # st()
+                print(new_term)
+                if new_term == to_diagnose:
+                    print("Found the term to diagnose!")
+                    res = PolyhedralTermList._transform_term(term, helpers, vars_to_elim, refine, diagnostics = True)
+                    print(res)
+                    # st()
+                    result = res[0]
+                    matrix_terms = res[1]
+                    diag_info = {'term': term, 'helpers': matrix_terms}
 
             new_terms.terms[i] = new_term
 
         that = PolyhedralTermList(new_terms.terms)
+
+        if diagnostics:
+            return (that.simplify(context), diag_info)
 
         # the last step needs to be a simplification
         logging.debug("Ending transformation with simplification")
@@ -1230,7 +1265,7 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
                     row_found = True
                     for j in range(n):
                         partial_sums[j] += residuals[j]
-                    matrix_row_terms.append(context_term)
+                    matrix_row_terms.append(context_term) # context term
                     break
             if not row_found:
                 raise ValueError("Could not find the {}th row of matrix".format(i))
@@ -1240,8 +1275,9 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         return matrix_row_terms, forbidden_vars
 
     @staticmethod
+
     def _context_reduction(
-        term: PolyhedralTerm, context: PolyhedralTermList, vars_to_elim: list, refine: bool, strategy: int
+        term: PolyhedralTerm, context: PolyhedralTermList, vars_to_elim: list, refine: bool, strategy: int, diagnostics = False
     ) -> PolyhedralTerm:
         logging.debug("********** Context reduction")
         logging.debug("Vars_to_elim %s \nTerm %s \nContext %s " % (vars_to_elim, term, context))
@@ -1268,6 +1304,13 @@ class PolyhedralTermList(TermList):  # noqa: WPS338
         for var in sols.keys():  # noqa: VNE002
             result = result.substitute_variable(var, sols[var])
         logging.debug("Term %s transformed to %s", term, result)
+
+        # st()
+        if diagnostics:
+            # print(result)
+            # print(matrix_row_terms)
+            # st()
+            return (result, matrix_row_terms)
 
         return result
 

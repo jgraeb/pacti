@@ -167,12 +167,16 @@ class PolyhedralIoContract(IoContract):
             simplify=simplify,
         )
 
+<<<<<<< HEAD:src/pacti/contracts/polyhedral_iocontract.py
     def compose(
         self,
         other: PolyhedralIoContract,
         vars_to_keep: Optional[List[str]] = None,
         simplify: bool = True,
     ) -> PolyhedralIoContract:
+=======
+    def compose(self, other: PolyhedralContract, vars_to_keep: Optional[List[str]] = None, diagnostics=False, to_diagnose = None, look_here = None) -> PolyhedralContract:
+>>>>>>> 762538dd4ebef62311943e5b0f23e28145249983:src/pacti/terms/polyhedra/polyhedral_contract.py
         """Compose polyhedral contracts.
 
         Compute the composition of the two given contracts and abstract the
@@ -193,6 +197,7 @@ class PolyhedralIoContract(IoContract):
         """
         if vars_to_keep is None:
             vars_to_keep = []
+<<<<<<< HEAD:src/pacti/contracts/polyhedral_iocontract.py
         return super().compose(other, [Var(x) for x in vars_to_keep], simplify)
 
     def compose_tactics(
@@ -290,6 +295,9 @@ class PolyhedralIoContract(IoContract):
             tactics_order = TACTICS_ORDER
 
         return super().quotient_tactics(other, additional_inputs, simplify, tactics_order)
+=======
+        return super().compose(other, [Var(x) for x in vars_to_keep], diagnostics, to_diagnose, look_here)
+>>>>>>> 762538dd4ebef62311943e5b0f23e28145249983:src/pacti/terms/polyhedra/polyhedral_contract.py
 
     def optimize(self, expr: str, maximize: bool = True) -> Optional[numeric]:
         """Optimize linear objective over the contract.
